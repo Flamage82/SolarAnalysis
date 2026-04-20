@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Battery vs Generator Analysis — Calvert Property</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #f8fafc; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+    .container { max-width: 1100px; margin: 0 auto; padding: 24px 20px; }
+
+    h1 { font-size: 22px; font-weight: 800; color: #0f172a; margin: 0; }
+    .subtitle { font-size: 13px; color: #64748b; margin: 4px 0 0; }
+
+    .stats { display: flex; gap: 12px; flex-wrap: wrap; margin: 20px 0; }
+    .stat-card { background: white; border-radius: 10px; padding: 12px 16px; flex: 1; min-width: 160; }
+    .stat-label { font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-value { font-size: 22px; font-weight: 800; margin-top: 2px; font-family: monospace; }
+    .stat-sub { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+
+    .layout { display: flex; gap: 20px; flex-wrap: wrap; }
+    .sidebar { flex: 1 1 280px; min-width: 280px; }
+    .main { flex: 2 1 500px; min-width: 400px; }
+
+    .panel { background: white; border-radius: 12px; padding: 20px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); margin-bottom: 16px; }
+    .panel h3 { font-size: 14px; font-weight: 700; color: #334155; margin: 0 0 16px; padding-bottom: 8px; border-bottom: 2px solid #e2e8f0; }
+
+    .slider-group { margin-bottom: 14px; }
+    .slider-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px; }
+    .slider-label { font-size: 13px; font-weight: 600; color: #334155; }
+    .slider-value { font-size: 14px; font-weight: 700; color: #1e40af; font-family: monospace; }
+    .slider-desc { font-size: 11px; color: #94a3b8; margin-bottom: 4px; }
+    input[type="range"] { width: 100%; accent-color: #2563eb; -webkit-appearance: auto; appearance: auto; }
+
+    .chart-container { position: relative; height: 320px; }
+    .chart-container-sm { position: relative; height: 240px; }
+
+    .notes { background: #fffbeb; border-radius: 10px; padding: 16px; margin-top: 20px; border: 1px solid #fde68a; font-size: 12px; color: #92400e; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div>
+      <h1>Battery Storage vs Generator Analysis</h1>
+      <p class="subtitle">Calvert Property — Comparing 2 batteries (no generator) vs 1 battery + Honda EU22i generator</p>
+    </div>
+
+    <div class="stats">
+      <div class="stat-card" style="border: 2px solid #2563eb22;">
+        <div class="stat-label">2 Batteries — Total Cost</div>
+        <div class="stat-value" id="stat-2batt" style="color: #2563eb;">—</div>
+        <div class="stat-sub" id="stat-2batt-sub"></div>
+      </div>
+      <div class="stat-card" style="border: 2px solid #dc262622;">
+        <div class="stat-label">1 Battery + Generator — Total Cost</div>
+        <div class="stat-value" id="stat-1batt" style="color: #dc2626;">—</div>
+        <div class="stat-sub" id="stat-1batt-sub"></div>
+      </div>
+      <div class="stat-card" style="border: 2px solid #05966922;">
+        <div class="stat-label">Breakeven Point</div>
+        <div class="stat-value" id="stat-breakeven" style="color: #059669;">—</div>
+        <div class="stat-sub" id="stat-breakeven-sub"></div>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="sidebar">
+        <div class="panel">
+          <h3>Assumptions</h3>
+          <div id="sliders"></div>
+        </div>
+      </div>
+      <div class="main">
+        <div class="panel">
+          <h3 style="border-bottom: none; margin-bottom: 8px; padding-bottom: 0;">Cumulative Cost Over Time</h3>
+          <div class="chart-container"><canvas id="costChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <h3 style="border-bottom: none; margin-bottom: 8px; padding-bottom: 0;">Monthly Generator Hours</h3>
+          <div class="chart-container-sm"><canvas id="genChart"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes" id="notes"></div>
+  </div>
+
+  <script>
+    const PANEL_WATTAGE = 440;
+    const SOLAR_PER_KW_BY_MONTH = [6.53, 6.25, 5.68, 4.83, 3.98, 3.69, 3.69, 4.26, 5.11, 5.68, 6.25, 6.53];
+    const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+    const params = {
+      dailyConsumption: 22,
+      numPanels: 8,
+      batteryPrice: 2299,
+      generatorPrice: 2500,
+      fuelPrice: 2.1,
+      genEfficiency: 1.6,
+      cloudyPct: 25,
+      months: 12,
+    };
+
+    const sliderDefs = [
+      { key: "dailyConsumption", label: "Daily Consumption", min: 10, max: 35, step: 1, unit: " kWh", desc: "Average household daily usage" },
+      { key: "numPanels", label: "Solar Panels", min: 4, max: 16, step: 1, unit: "panels", desc: "Jinko 440W panels — array size scales solar production" },
+      { key: "batteryPrice", label: "Battery Unit Price", min: 700, max: 3000, step: 50, unit: "$", desc: "Per 48V 100Ah LiFePO4 battery" },
+      { key: "generatorPrice", label: "Generator Price", min: 1000, max: 4000, step: 100, unit: "$", desc: "Honda EU22i or similar inverter gen" },
+      { key: "fuelPrice", label: "Fuel Price", min: 1.5, max: 3.0, step: 0.1, unit: " $/L", desc: "Unleaded petrol per litre" },
+      { key: "genEfficiency", label: "Generator Efficiency", min: 1.0, max: 2.5, step: 0.1, unit: " kWh/L", desc: "Usable kWh stored per litre of fuel" },
+      { key: "cloudyPct", label: "Cloudy Day %", min: 5, max: 50, step: 5, unit: "%", desc: "% of days with very low solar (~35% of average)" },
+      { key: "months", label: "Months to Model", min: 3, max: 24, step: 1, unit: " mo", desc: "" },
+    ];
+
+    // Build sliders
+    const slidersEl = document.getElementById("sliders");
+    sliderDefs.forEach(def => {
+      const div = document.createElement("div");
+      div.className = "slider-group";
+      div.innerHTML = `
+        <div class="slider-header">
+          <span class="slider-label">${def.label}</span>
+          <span class="slider-value" id="val-${def.key}"></span>
+        </div>
+        ${def.desc ? `<div class="slider-desc">${def.desc}</div>` : ""}
+        <input type="range" id="slider-${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${params[def.key]}">
+      `;
+      slidersEl.appendChild(div);
+
+      const input = div.querySelector("input");
+      input.addEventListener("input", () => {
+        params[def.key] = Number(input.value);
+        update();
+      });
+    });
+
+    function formatSliderValue(def, val) {
+      if (def.key === "numPanels") {
+        const kw = ((val * PANEL_WATTAGE) / 1000).toFixed(1);
+        return `${val} × 440W (${kw}kW)`;
+      }
+      if (def.unit === "$") return `$${Number(val).toLocaleString()}`;
+      return `${val}${def.unit}`;
+    }
+
+    function simulate() {
+      const { dailyConsumption, batteryPrice, generatorPrice, fuelPrice, genEfficiency, months, cloudyPct, numPanels } = params;
+      const arrayKw = (numPanels * PANEL_WATTAGE) / 1000;
+      const usable2 = 8.0, usable1 = 4.0;
+      const startMonth = new Date().getMonth();
+
+      let cum2 = batteryPrice * 2;
+      let cum1 = batteryPrice + generatorPrice;
+
+      const labels = ["Start"];
+      const line2 = [Math.round(cum2)];
+      const line1 = [Math.round(cum1)];
+      const genHrs1Arr = [], genHrs2Arr = [], genLabels = [];
+
+      let tgh1 = 0, tgh2 = 0, tf1 = 0, tf2 = 0;
+
+      for (let m = 0; m < months; m++) {
+        const mi = (startMonth + m) % 12;
+        const days = DAYS_IN_MONTH[mi];
+        const avgSolar = SOLAR_PER_KW_BY_MONTH[mi] * arrayKw;
+        let gk2 = 0, gk1 = 0;
+
+        for (let d = 0; d < days; d++) {
+          const cloudy = (d % Math.round(100 / cloudyPct)) === 0;
+          const solar = cloudy ? avgSolar * 0.35 : avgSolar * 1.05;
+          const deficit = Math.max(0, dailyConsumption - solar);
+          gk2 += Math.max(0, deficit - usable2);
+          gk1 += Math.max(0, deficit - usable1);
+        }
+
+        const fl2 = gk2 / genEfficiency, fl1 = gk1 / genEfficiency;
+        cum2 += fl2 * fuelPrice;
+        cum1 += fl1 * fuelPrice;
+        tf1 += fl1; tf2 += fl2;
+        tgh1 += gk1 / 1.8; tgh2 += gk2 / 1.8;
+
+        const lbl = `${MONTH_NAMES[mi]} (M${m + 1})`;
+        labels.push(lbl);
+        line2.push(Math.round(cum2));
+        line1.push(Math.round(cum1));
+        genLabels.push(lbl);
+        genHrs1Arr.push(Math.round(gk1 / 1.8));
+        genHrs2Arr.push(Math.round(gk2 / 1.8));
+      }
+
+      // Find breakeven
+      let breakeven = null;
+      for (let i = 1; i < line2.length; i++) {
+        if (line2[i] <= line1[i]) { breakeven = i; break; }
+      }
+
+      return { labels, line2, line1, genLabels, genHrs1Arr, genHrs2Arr, breakeven,
+        tgh1: Math.round(tgh1), tgh2: Math.round(tgh2),
+        tf1: Math.round(tf1), tf2: Math.round(tf2),
+        final2: Math.round(cum2), final1: Math.round(cum1) };
+    }
+
+    // Create charts
+    const costCtx = document.getElementById("costChart").getContext("2d");
+    const costChart = new Chart(costCtx, {
+      type: "line",
+      data: {
+        labels: [],
+        datasets: [
+          { label: "2 Batteries (no gen)", data: [], borderColor: "#2563eb", backgroundColor: "#2563eb22", borderWidth: 3, pointRadius: 3, tension: 0.1, fill: false },
+          { label: "1 Battery + Generator", data: [], borderColor: "#dc2626", backgroundColor: "#dc262622", borderWidth: 3, pointRadius: 3, tension: 0.1, fill: false },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          tooltip: { callbacks: { label: ctx => ctx.dataset.label + ": $" + ctx.parsed.y.toLocaleString() } },
+          legend: { position: "bottom", labels: { font: { size: 12 }, usePointStyle: true, padding: 16 } }
+        },
+        scales: {
+          y: { ticks: { callback: v => "$" + (v/1000).toFixed(1) + "k", font: { size: 11 } }, grid: { color: "#f1f5f9" } },
+          x: { ticks: { font: { size: 10 }, maxRotation: 45 }, grid: { display: false } }
+        }
+      }
+    });
+
+    const genCtx = document.getElementById("genChart").getContext("2d");
+    const genChart = new Chart(genCtx, {
+      type: "bar",
+      data: {
+        labels: [],
+        datasets: [
+          { label: "1 Battery + Gen", data: [], backgroundColor: "#dc262666", borderColor: "#dc2626", borderWidth: 1, borderRadius: 4 },
+          { label: "2 Batteries", data: [], backgroundColor: "#2563eb66", borderColor: "#2563eb", borderWidth: 1, borderRadius: 4 },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          tooltip: { callbacks: { label: ctx => ctx.dataset.label + ": " + ctx.parsed.y + " hrs" } },
+          legend: { position: "bottom", labels: { font: { size: 12 }, usePointStyle: true, padding: 16 } }
+        },
+        scales: {
+          y: { title: { display: true, text: "Hours", font: { size: 11 } }, ticks: { font: { size: 11 } }, grid: { color: "#f1f5f9" } },
+          x: { ticks: { font: { size: 10 }, maxRotation: 45 }, grid: { display: false } }
+        }
+      }
+    });
+
+    function update() {
+      // Update slider displays
+      sliderDefs.forEach(def => {
+        document.getElementById(`val-${def.key}`).textContent = formatSliderValue(def, params[def.key]);
+      });
+
+      const r = simulate();
+      const { months } = params;
+      const diff = r.final2 - r.final1;
+
+      // Stats
+      document.getElementById("stat-2batt").textContent = "$" + r.final2.toLocaleString();
+      document.getElementById("stat-2batt-sub").textContent = r.tgh2 + "h generator · " + r.tf2 + "L fuel";
+      document.getElementById("stat-1batt").textContent = "$" + r.final1.toLocaleString();
+      document.getElementById("stat-1batt-sub").textContent = r.tgh1 + "h generator · " + r.tf1 + "L fuel";
+
+      if (r.breakeven) {
+        document.getElementById("stat-breakeven").textContent = r.breakeven + " months";
+      } else if (diff > 0) {
+        document.getElementById("stat-breakeven").textContent = "Not within " + months + " months";
+      } else {
+        document.getElementById("stat-breakeven").textContent = "Immediate";
+      }
+      document.getElementById("stat-breakeven-sub").textContent = diff > 0
+        ? "2-batt costs $" + diff.toLocaleString() + " more after " + months + "mo"
+        : "2-batt saves $" + Math.abs(diff).toLocaleString() + " after " + months + "mo";
+
+      // Cost chart
+      costChart.data.labels = r.labels;
+      costChart.data.datasets[0].data = r.line2;
+      costChart.data.datasets[1].data = r.line1;
+      costChart.update();
+
+      // Gen chart
+      genChart.data.labels = r.genLabels;
+      genChart.data.datasets[0].data = r.genHrs1Arr;
+      genChart.data.datasets[1].data = r.genHrs2Arr;
+      genChart.update();
+
+      // Notes
+      const kw = ((params.numPanels * PANEL_WATTAGE) / 1000).toFixed(1);
+      document.getElementById("notes").innerHTML = `<strong>Model notes:</strong> This is a simplified simulation. Solar production uses SE QLD monthly averages scaled to the selected array size (${params.numPanels} × ${PANEL_WATTAGE}W = ${kw}kW). Cloudy days produce ~35% of average yield. The model assumes the battery bank is fully cycled each day (charged during sun, depleted overnight). Generator runtime assumes the Honda EU22i's ~1.8kW continuous output. Real-world results will vary with actual weather patterns, usage habits, and seasonal changes. The 2-battery scenario assumes a generator is available but only used when both batteries and solar can't cover demand.`;
+    }
+
+    update();
+  </script>
+</body>
+</html>
