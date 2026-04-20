@@ -44,17 +44,30 @@
   <div class="container">
     <div>
       <h1>Battery Storage vs Generator Analysis</h1>
-      <p class="subtitle">Calvert Property — Comparing 2 batteries (no generator) vs 1 battery + Honda EU22i generator</p>
+      <p class="subtitle">Calvert Property — Both scenarios include a generator for backup. Is the second battery worth it?</p>
+    </div>
+
+    <div id="gen-cost-banner" style="background: white; border-radius: 10px; padding: 14px 18px; margin: 16px 0 4px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+      <div style="font-size: 13px; color: #334155; font-weight: 600;">Generator all-in cost:</div>
+      <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-family: monospace; font-size: 13px;">
+        <span id="gcb-dep" style="background: #dbeafe; color: #1e40af; padding: 3px 8px; border-radius: 6px;"></span>
+        <span style="color: #94a3b8;">+</span>
+        <span id="gcb-fuel" style="background: #fef3c7; color: #92400e; padding: 3px 8px; border-radius: 6px;"></span>
+        <span style="color: #94a3b8;">+</span>
+        <span id="gcb-maint" style="background: #f1f5f9; color: #475569; padding: 3px 8px; border-radius: 6px;"></span>
+        <span style="color: #94a3b8;">=</span>
+        <span id="gcb-total" style="background: #059669; color: white; padding: 3px 10px; border-radius: 6px; font-weight: 700; font-size: 15px;"></span>
+      </div>
     </div>
 
     <div class="stats">
       <div class="stat-card" style="border: 2px solid #2563eb22;">
-        <div class="stat-label">2 Batteries — Total Cost</div>
+        <div class="stat-label">2 Batteries + Generator</div>
         <div class="stat-value" id="stat-2batt" style="color: #2563eb;">—</div>
         <div class="stat-sub" id="stat-2batt-sub"></div>
       </div>
       <div class="stat-card" style="border: 2px solid #dc262622;">
-        <div class="stat-label">1 Battery + Generator — Total Cost</div>
+        <div class="stat-label">1 Battery + Generator</div>
         <div class="stat-value" id="stat-1batt" style="color: #dc2626;">—</div>
         <div class="stat-sub" id="stat-1batt-sub"></div>
       </div>
@@ -94,25 +107,27 @@
     const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
     const params = {
-      dailyConsumption: 22,
+      dailyConsumption: 12,
       numPanels: 8,
       batteryPrice: 2299,
       generatorPrice: 2500,
-      fuelPrice: 2.1,
+      generatorLifetime: 2500,
+      fuelPrice: 3.0,
       genEfficiency: 1.6,
       cloudyPct: 25,
-      months: 12,
+      months: 24,
     };
 
     const sliderDefs = [
-      { key: "dailyConsumption", label: "Daily Consumption", min: 10, max: 35, step: 1, unit: " kWh", desc: "Average household daily usage" },
+      { key: "dailyConsumption", label: "Daily Consumption", min: 0, max: 35, step: 1, unit: " kWh", desc: "Average household daily usage" },
       { key: "numPanels", label: "Solar Panels", min: 4, max: 16, step: 1, unit: "panels", desc: "Jinko 440W panels — array size scales solar production" },
       { key: "batteryPrice", label: "Battery Unit Price", min: 700, max: 3000, step: 50, unit: "$", desc: "Per 48V 100Ah LiFePO4 battery" },
-      { key: "generatorPrice", label: "Generator Price", min: 1000, max: 4000, step: 100, unit: "$", desc: "Honda EU22i or similar inverter gen" },
-      { key: "fuelPrice", label: "Fuel Price", min: 1.5, max: 3.0, step: 0.1, unit: " $/L", desc: "Unleaded petrol per litre" },
-      { key: "genEfficiency", label: "Generator Efficiency", min: 1.0, max: 2.5, step: 0.1, unit: " kWh/L", desc: "Usable kWh stored per litre of fuel" },
+      { key: "generatorPrice", label: "Generator Purchase Price", min: 500, max: 5000, step: 100, unit: "$", desc: "Honda EU22i or similar inverter generator" },
+      { key: "generatorLifetime", label: "Generator Lifetime", min: 500, max: 5000, step: 250, unit: " hrs", desc: "Expected total service life before replacement" },
+      { key: "fuelPrice", label: "Fuel Price", min: 1.5, max: 4.0, step: 0.1, unit: " $/L", desc: "Unleaded petrol per litre" },
+      { key: "genEfficiency", label: "Generator Efficiency", min: 1.0, max: 2.5, step: 0.1, unit: " kWh/L", desc: "Usable kWh delivered per hour of runtime at ~1.8kW output" },
       { key: "cloudyPct", label: "Cloudy Day %", min: 5, max: 50, step: 5, unit: "%", desc: "% of days with very low solar (~35% of average)" },
-      { key: "months", label: "Months to Model", min: 3, max: 24, step: 1, unit: " mo", desc: "" },
+      { key: "months", label: "Months to Model", min: 3, max: 60, step: 1, unit: " mo", desc: "" },
     ];
 
     // Build sliders
@@ -147,20 +162,28 @@
     }
 
     function simulate() {
-      const { dailyConsumption, batteryPrice, generatorPrice, fuelPrice, genEfficiency, months, cloudyPct, numPanels } = params;
+      const { dailyConsumption, batteryPrice, generatorPrice, generatorLifetime, fuelPrice, genEfficiency, months, cloudyPct, numPanels } = params;
       const arrayKw = (numPanels * PANEL_WATTAGE) / 1000;
       const usable2 = 8.0, usable1 = 4.0;
+      const genOutputKw = 1.8; // Honda EU22i continuous output
       const startMonth = new Date().getMonth();
 
+      // All-in generator cost per hour: depreciation + fuel + maintenance (~$0.20/hr)
+      const depreciationPerHr = generatorPrice / generatorLifetime;
+      const fuelPerHr = (genOutputKw / genEfficiency) * fuelPrice; // litres/hr × $/L
+      const maintenancePerHr = 0.20;
+      const genCostPerHour = depreciationPerHr + fuelPerHr + maintenancePerHr;
+
+      // Upfront: only difference is the second battery
       let cum2 = batteryPrice * 2;
-      let cum1 = batteryPrice + generatorPrice;
+      let cum1 = batteryPrice;
 
       const labels = ["Start"];
       const line2 = [Math.round(cum2)];
       const line1 = [Math.round(cum1)];
       const genHrs1Arr = [], genHrs2Arr = [], genLabels = [];
 
-      let tgh1 = 0, tgh2 = 0, tf1 = 0, tf2 = 0;
+      let tgh1 = 0, tgh2 = 0, tCost1 = 0, tCost2 = 0;
 
       for (let m = 0; m < months; m++) {
         const mi = (startMonth + m) % 12;
@@ -176,22 +199,27 @@
           gk1 += Math.max(0, deficit - usable1);
         }
 
-        const fl2 = gk2 / genEfficiency, fl1 = gk1 / genEfficiency;
-        cum2 += fl2 * fuelPrice;
-        cum1 += fl1 * fuelPrice;
-        tf1 += fl1; tf2 += fl2;
-        tgh1 += gk1 / 1.8; tgh2 += gk2 / 1.8;
+        // Convert kWh deficit to generator hours, then apply $/hr
+        const hrs2 = gk2 / genOutputKw;
+        const hrs1 = gk1 / genOutputKw;
+        const cost2 = hrs2 * genCostPerHour;
+        const cost1 = hrs1 * genCostPerHour;
+
+        cum2 += cost2;
+        cum1 += cost1;
+        tCost1 += cost1; tCost2 += cost2;
+        tgh1 += hrs1; tgh2 += hrs2;
 
         const lbl = `${MONTH_NAMES[mi]} (M${m + 1})`;
         labels.push(lbl);
         line2.push(Math.round(cum2));
         line1.push(Math.round(cum1));
         genLabels.push(lbl);
-        genHrs1Arr.push(Math.round(gk1 / 1.8));
-        genHrs2Arr.push(Math.round(gk2 / 1.8));
+        genHrs1Arr.push(Math.round(hrs1));
+        genHrs2Arr.push(Math.round(hrs2));
       }
 
-      // Find breakeven
+      // Find breakeven: when does 2-batt cumulative cost drop to or below 1-batt?
       let breakeven = null;
       for (let i = 1; i < line2.length; i++) {
         if (line2[i] <= line1[i]) { breakeven = i; break; }
@@ -199,8 +227,9 @@
 
       return { labels, line2, line1, genLabels, genHrs1Arr, genHrs2Arr, breakeven,
         tgh1: Math.round(tgh1), tgh2: Math.round(tgh2),
-        tf1: Math.round(tf1), tf2: Math.round(tf2),
-        final2: Math.round(cum2), final1: Math.round(cum1) };
+        tCost1: Math.round(tCost1), tCost2: Math.round(tCost2),
+        final2: Math.round(cum2), final1: Math.round(cum1),
+        genCostPerHour, depreciationPerHr, fuelPerHr, maintenancePerHr };
     }
 
     // Create charts
@@ -210,7 +239,7 @@
       data: {
         labels: [],
         datasets: [
-          { label: "2 Batteries (no gen)", data: [], borderColor: "#2563eb", backgroundColor: "#2563eb22", borderWidth: 3, pointRadius: 3, tension: 0.1, fill: false },
+          { label: "2 Batteries + Generator", data: [], borderColor: "#2563eb", backgroundColor: "#2563eb22", borderWidth: 3, pointRadius: 3, tension: 0.1, fill: false },
           { label: "1 Battery + Generator", data: [], borderColor: "#dc2626", backgroundColor: "#dc262622", borderWidth: 3, pointRadius: 3, tension: 0.1, fill: false },
         ]
       },
@@ -260,11 +289,18 @@
       const { months } = params;
       const diff = r.final2 - r.final1;
 
+      // Generator cost banner
+      const lph = (1.8 / params.genEfficiency).toFixed(1);
+      document.getElementById("gcb-dep").textContent = "$" + r.depreciationPerHr.toFixed(2) + "/hr depreciation";
+      document.getElementById("gcb-fuel").textContent = "$" + r.fuelPerHr.toFixed(2) + "/hr fuel (" + lph + "L/hr × $" + params.fuelPrice.toFixed(2) + ")";
+      document.getElementById("gcb-maint").textContent = "$" + r.maintenancePerHr.toFixed(2) + "/hr maintenance";
+      document.getElementById("gcb-total").textContent = "$" + r.genCostPerHour.toFixed(2) + "/hr";
+
       // Stats
       document.getElementById("stat-2batt").textContent = "$" + r.final2.toLocaleString();
-      document.getElementById("stat-2batt-sub").textContent = r.tgh2 + "h generator · " + r.tf2 + "L fuel";
+      document.getElementById("stat-2batt-sub").textContent = r.tgh2 + "h gen · $" + r.tCost2.toLocaleString() + " running cost";
       document.getElementById("stat-1batt").textContent = "$" + r.final1.toLocaleString();
-      document.getElementById("stat-1batt-sub").textContent = r.tgh1 + "h generator · " + r.tf1 + "L fuel";
+      document.getElementById("stat-1batt-sub").textContent = r.tgh1 + "h gen · $" + r.tCost1.toLocaleString() + " running cost";
 
       if (r.breakeven) {
         document.getElementById("stat-breakeven").textContent = r.breakeven + " months";
@@ -274,8 +310,8 @@
         document.getElementById("stat-breakeven").textContent = "Immediate";
       }
       document.getElementById("stat-breakeven-sub").textContent = diff > 0
-        ? "2-batt costs $" + diff.toLocaleString() + " more after " + months + "mo"
-        : "2-batt saves $" + Math.abs(diff).toLocaleString() + " after " + months + "mo";
+        ? "2nd battery costs $" + diff.toLocaleString() + " more after " + months + "mo"
+        : "2nd battery saves $" + Math.abs(diff).toLocaleString() + " after " + months + "mo";
 
       // Cost chart
       costChart.data.labels = r.labels;
@@ -291,7 +327,7 @@
 
       // Notes
       const kw = ((params.numPanels * PANEL_WATTAGE) / 1000).toFixed(1);
-      document.getElementById("notes").innerHTML = `<strong>Model notes:</strong> This is a simplified simulation. Solar production uses SE QLD monthly averages scaled to the selected array size (${params.numPanels} × ${PANEL_WATTAGE}W = ${kw}kW). Cloudy days produce ~35% of average yield. The model assumes the battery bank is fully cycled each day (charged during sun, depleted overnight). Generator runtime assumes the Honda EU22i's ~1.8kW continuous output. Real-world results will vary with actual weather patterns, usage habits, and seasonal changes. The 2-battery scenario assumes a generator is available but only used when both batteries and solar can't cover demand.`;
+      document.getElementById("notes").innerHTML = `<strong>Model notes:</strong> This is a simplified simulation. Solar production uses SE QLD monthly averages scaled to the selected array size (${params.numPanels} × ${PANEL_WATTAGE}W = ${kw}kW). Cloudy days produce ~35% of average yield. The model assumes the battery bank is fully cycled each day (charged during sun, depleted overnight). Generator runtime assumes the Honda EU22i's ~1.8kW continuous output. The all-in generator cost of <strong>$${r.genCostPerHour.toFixed(2)}/hr</strong> is calculated from: $${r.depreciationPerHr.toFixed(2)} depreciation ($${params.generatorPrice}/${params.generatorLifetime}hrs) + $${r.fuelPerHr.toFixed(2)} fuel + $${r.maintenancePerHr.toFixed(2)} maintenance. Real-world results will vary with actual weather patterns and usage habits.`;
     }
 
     update();
