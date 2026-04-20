@@ -35,7 +35,7 @@
     input[type="range"] { width: 100%; accent-color: #2563eb; -webkit-appearance: auto; appearance: auto; }
 
     .chart-container { position: relative; height: 320px; }
-    .chart-container-sm { position: relative; height: 240px; }
+    .chart-container-sm { position: relative; height: 320px; }
 
     .notes { background: #fffbeb; border-radius: 10px; padding: 16px; margin-top: 20px; border: 1px solid #fde68a; font-size: 12px; color: #92400e; line-height: 1.6; }
   </style>
@@ -91,7 +91,7 @@
           <div class="chart-container"><canvas id="costChart"></canvas></div>
         </div>
         <div class="panel">
-          <h3 style="border-bottom: none; margin-bottom: 8px; padding-bottom: 0;">Monthly Generator Hours</h3>
+          <h3 style="border-bottom: none; margin-bottom: 8px; padding-bottom: 0;">Monthly Generator Hours & Battery SOC</h3>
           <div class="chart-container-sm"><canvas id="genChart"></canvas></div>
         </div>
       </div>
@@ -182,21 +182,50 @@
       const line2 = [Math.round(cum2)];
       const line1 = [Math.round(cum1)];
       const genHrs1Arr = [], genHrs2Arr = [], genLabels = [];
+      const minSoc1Arr = [], maxSoc1Arr = [], minSoc2Arr = [], maxSoc2Arr = [];
 
       let tgh1 = 0, tgh2 = 0, tCost1 = 0, tCost2 = 0;
+
+      // Stateful SOC tracking (start batteries full)
+      let soc1 = usable1, soc2 = usable2;
 
       for (let m = 0; m < months; m++) {
         const mi = (startMonth + m) % 12;
         const days = DAYS_IN_MONTH[mi];
         const avgSolar = SOLAR_PER_KW_BY_MONTH[mi] * arrayKw;
         let gk2 = 0, gk1 = 0;
+        let mMin1 = usable1, mMax1 = 0, mMin2 = usable2, mMax2 = 0;
 
         for (let d = 0; d < days; d++) {
           const cloudy = (d % Math.round(100 / cloudyPct)) === 0;
           const solar = cloudy ? avgSolar * 0.35 : avgSolar * 1.05;
-          const deficit = Math.max(0, dailyConsumption - solar);
-          gk2 += Math.max(0, deficit - usable2);
-          gk1 += Math.max(0, deficit - usable1);
+          const net = solar - dailyConsumption;
+
+          // 1-battery scenario
+          if (net >= 0) {
+            soc1 = Math.min(soc1 + net, usable1);
+          } else {
+            soc1 += net; // net is negative
+            if (soc1 < 0) {
+              gk1 += -soc1; // generator covers shortfall
+              soc1 = 0;
+            }
+          }
+          if (soc1 < mMin1) mMin1 = soc1;
+          if (soc1 > mMax1) mMax1 = soc1;
+
+          // 2-battery scenario
+          if (net >= 0) {
+            soc2 = Math.min(soc2 + net, usable2);
+          } else {
+            soc2 += net;
+            if (soc2 < 0) {
+              gk2 += -soc2;
+              soc2 = 0;
+            }
+          }
+          if (soc2 < mMin2) mMin2 = soc2;
+          if (soc2 > mMax2) mMax2 = soc2;
         }
 
         // Convert kWh deficit to generator hours, then apply $/hr
@@ -217,6 +246,11 @@
         genLabels.push(lbl);
         genHrs1Arr.push(Math.round(hrs1));
         genHrs2Arr.push(Math.round(hrs2));
+        // SOC as percentage of usable capacity
+        minSoc1Arr.push(Math.round((mMin1 / usable1) * 100));
+        maxSoc1Arr.push(Math.round((mMax1 / usable1) * 100));
+        minSoc2Arr.push(Math.round((mMin2 / usable2) * 100));
+        maxSoc2Arr.push(Math.round((mMax2 / usable2) * 100));
       }
 
       // Find breakeven: when does 2-batt cumulative cost drop to or below 1-batt?
@@ -226,6 +260,7 @@
       }
 
       return { labels, line2, line1, genLabels, genHrs1Arr, genHrs2Arr, breakeven,
+        minSoc1Arr, maxSoc1Arr, minSoc2Arr, maxSoc2Arr,
         tgh1: Math.round(tgh1), tgh2: Math.round(tgh2),
         tCost1: Math.round(tCost1), tCost2: Math.round(tCost2),
         final2: Math.round(cum2), final1: Math.round(cum1),
@@ -262,18 +297,26 @@
       data: {
         labels: [],
         datasets: [
-          { label: "1 Battery + Gen", data: [], backgroundColor: "#dc262666", borderColor: "#dc2626", borderWidth: 1, borderRadius: 4 },
-          { label: "2 Batteries", data: [], backgroundColor: "#2563eb66", borderColor: "#2563eb", borderWidth: 1, borderRadius: 4 },
+          { label: "Gen hrs (1 Batt)", data: [], backgroundColor: "#dc262666", borderColor: "#dc2626", borderWidth: 1, borderRadius: 4, yAxisID: "y" },
+          { label: "Gen hrs (2 Batt)", data: [], backgroundColor: "#2563eb66", borderColor: "#2563eb", borderWidth: 1, borderRadius: 4, yAxisID: "y" },
+          { label: "Min SOC (1 Batt)", data: [], type: "line", borderColor: "#dc2626", backgroundColor: "#dc262622", borderWidth: 2, borderDash: [6, 3], pointRadius: 3, pointStyle: "triangle", tension: 0.3, fill: false, yAxisID: "y1" },
+          { label: "Min SOC (2 Batt)", data: [], type: "line", borderColor: "#2563eb", backgroundColor: "#2563eb22", borderWidth: 2, borderDash: [6, 3], pointRadius: 3, pointStyle: "triangle", tension: 0.3, fill: false, yAxisID: "y1" },
+          { label: "Max SOC (1 Batt)", data: [], type: "line", borderColor: "#dc2626", backgroundColor: "#dc262622", borderWidth: 1, borderDash: [2, 2], pointRadius: 2, pointStyle: "circle", tension: 0.3, fill: false, yAxisID: "y1" },
+          { label: "Max SOC (2 Batt)", data: [], type: "line", borderColor: "#2563eb", backgroundColor: "#2563eb22", borderWidth: 1, borderDash: [2, 2], pointRadius: 2, pointStyle: "circle", tension: 0.3, fill: false, yAxisID: "y1" },
         ]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: {
-          tooltip: { callbacks: { label: ctx => ctx.dataset.label + ": " + ctx.parsed.y + " hrs" } },
-          legend: { position: "bottom", labels: { font: { size: 12 }, usePointStyle: true, padding: 16 } }
+          tooltip: { callbacks: { label: ctx => {
+            if (ctx.dataset.yAxisID === "y1") return ctx.dataset.label + ": " + ctx.parsed.y + "%";
+            return ctx.dataset.label + ": " + ctx.parsed.y + " hrs";
+          }}},
+          legend: { position: "bottom", labels: { font: { size: 11 }, usePointStyle: true, padding: 12 } }
         },
         scales: {
-          y: { title: { display: true, text: "Hours", font: { size: 11 } }, ticks: { font: { size: 11 } }, grid: { color: "#f1f5f9" } },
+          y: { position: "left", title: { display: true, text: "Generator Hours", font: { size: 11 } }, ticks: { font: { size: 11 } }, grid: { color: "#f1f5f9" } },
+          y1: { position: "right", title: { display: true, text: "Battery SOC %", font: { size: 11 } }, min: 0, max: 100, ticks: { font: { size: 11 }, callback: v => v + "%" }, grid: { display: false } },
           x: { ticks: { font: { size: 10 }, maxRotation: 45 }, grid: { display: false } }
         }
       }
@@ -319,15 +362,19 @@
       costChart.data.datasets[1].data = r.line1;
       costChart.update();
 
-      // Gen chart
+      // Gen chart + SOC
       genChart.data.labels = r.genLabels;
       genChart.data.datasets[0].data = r.genHrs1Arr;
       genChart.data.datasets[1].data = r.genHrs2Arr;
+      genChart.data.datasets[2].data = r.minSoc1Arr;
+      genChart.data.datasets[3].data = r.minSoc2Arr;
+      genChart.data.datasets[4].data = r.maxSoc1Arr;
+      genChart.data.datasets[5].data = r.maxSoc2Arr;
       genChart.update();
 
       // Notes
       const kw = ((params.numPanels * PANEL_WATTAGE) / 1000).toFixed(1);
-      document.getElementById("notes").innerHTML = `<strong>Model notes:</strong> This is a simplified simulation. Solar production uses SE QLD monthly averages scaled to the selected array size (${params.numPanels} × ${PANEL_WATTAGE}W = ${kw}kW). Cloudy days produce ~35% of average yield. The model assumes the battery bank is fully cycled each day (charged during sun, depleted overnight). Generator runtime assumes the Honda EU22i's ~1.8kW continuous output. The all-in generator cost of <strong>$${r.genCostPerHour.toFixed(2)}/hr</strong> is calculated from: $${r.depreciationPerHr.toFixed(2)} depreciation ($${params.generatorPrice}/${params.generatorLifetime}hrs) + $${r.fuelPerHr.toFixed(2)} fuel + $${r.maintenancePerHr.toFixed(2)} maintenance. Real-world results will vary with actual weather patterns and usage habits.`;
+      document.getElementById("notes").innerHTML = `<strong>Model notes:</strong> This is a simplified simulation. Solar production uses SE QLD monthly averages scaled to the selected array size (${params.numPanels} × ${PANEL_WATTAGE}W = ${kw}kW). Cloudy days produce ~35% of average yield. Battery state-of-charge is tracked day-to-day, so consecutive cloudy days properly deplete the bank. Generator runtime assumes the Honda EU22i's ~1.8kW continuous output. The all-in generator cost of <strong>$${r.genCostPerHour.toFixed(2)}/hr</strong> is calculated from: $${r.depreciationPerHr.toFixed(2)} depreciation ($${params.generatorPrice}/${params.generatorLifetime}hrs) + $${r.fuelPerHr.toFixed(2)} fuel + $${r.maintenancePerHr.toFixed(2)} maintenance. Real-world results will vary with actual weather patterns and usage habits.`;
     }
 
     update();
